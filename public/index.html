@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PteroRemote Glass UI</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: rgba(15,23,42,0.5); }
+::-webkit-scrollbar-thumb { background: rgba(59,130,246,0.4); border-radius: 10px; }
+
+/* Fonts & Terminal */
+.terminal-font { font-family: 'Fira Code', monospace; font-size: 12px; }
+
+/* Glass effect */
+.glass { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; }
+
+button:hover { transform: scale(1.03); transition: 0.2s; }
+</style>
+</head>
+<body class="bg-[#020617] text-slate-200 p-6 min-h-screen">
+
+<!-- LOGIN -->
+<div id="login-screen" class="max-w-md mx-auto p-6 space-y-4 glass">
+<h1 class="text-3xl font-extrabold text-blue-400 tracking-widest">Ptero<span class="text-emerald-400">Remote</span></h1>
+<p class="text-slate-400 text-sm">Enter your Panel Domain & API Key</p>
+<input id="domain" type="text" placeholder="https://panel.example.com" class="w-full p-3 rounded bg-slate-900/70 text-white">
+<input id="apiKey" type="password" placeholder="ptlc_your_api_key" class="w-full p-3 rounded bg-slate-900/70 text-white">
+<button onclick="saveLogin()" class="w-full bg-blue-600 py-3 rounded font-bold shadow-lg shadow-blue-900/30">CONNECT</button>
+</div>
+
+<!-- DASHBOARD -->
+<div id="main-content" class="hidden space-y-6">
+
+<!-- Header -->
+<div class="flex justify-between items-center mb-4 glass p-4">
+<h1 class="text-xl font-bold text-blue-400">Dashboard</h1>
+<select id="serverSelect" class="bg-slate-800/70 text-sm rounded p-2"></select>
+</div>
+
+<!-- Power buttons -->
+<div class="flex gap-3 glass p-4">
+<button onclick="sendPower('start')" class="bg-emerald-500/70 px-4 py-2 rounded font-bold shadow">START</button>
+<button onclick="sendPower('restart')" class="bg-amber-500/70 px-4 py-2 rounded font-bold shadow">RESTART</button>
+<button onclick="sendPower('stop')" class="bg-rose-500/70 px-4 py-2 rounded font-bold shadow">STOP</button>
+</div>
+
+<!-- Resource Chart -->
+<div class="glass p-4 rounded shadow-xl">
+<canvas id="resourceChart" height="100"></canvas>
+</div>
+
+<!-- Live Console -->
+<div class="glass p-4 rounded shadow-xl flex flex-col h-64">
+<div class="text-slate-400 text-xs font-bold mb-2">Live Console</div>
+<div id="console-logs" class="flex-1 overflow-y-auto terminal-font"></div>
+<input type="text" id="cmdInput" placeholder="Enter command..." class="bg-slate-900/70 p-2 mt-2 rounded text-white" onkeydown="if(event.key==='Enter') executeCommand()">
+</div>
+
+<!-- File Manager -->
+<div class="glass p-4 rounded shadow-xl">
+<h3 class="font-bold text-blue-400">File Manager</h3>
+<div id="fileList" class="mt-2 space-y-1 max-h-64 overflow-y-auto"></div>
+</div>
+
+<!-- File Editor Modal -->
+<div id="editor-modal" class="fixed inset-0 hidden bg-black/90 flex items-center justify-center p-6">
+<div class="glass w-full max-w-4xl h-[80vh] flex flex-col p-4">
+<div class="flex justify-between mb-2">
+<span id="editing-filename" class="font-bold text-blue-400">Editor</span>
+<button onclick="closeEditor()" class="text-slate-300 hover:text-white">CLOSE</button>
+</div>
+<textarea id="file-content" class="flex-1 bg-[#050505] text-emerald-400 terminal-font p-4 resize-none rounded"></textarea>
+<div class="mt-2 flex justify-end">
+<button onclick="saveFileContent()" class="bg-blue-600 px-4 py-2 rounded font-bold shadow">SAVE</button>
+</div>
+</div>
+</div>
+
+</div>
+
+<script>
+let domain, apiKey, currentServer, chart, consoleTail=0, currentFilePath;
+
+// ---- LOGIN ----
+function saveLogin(){
+    domain=document.getElementById('domain').value.replace(/\/$/,"");
+    apiKey=document.getElementById('apiKey').value;
+    if(!domain||!apiKey)return alert("Fill domain & API key");
+    localStorage.setItem('ptero_domain',domain);
+    localStorage.setItem('ptero_key',apiKey);
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('main-content').classList.remove('hidden');
+    fetchServers(); initChart(); startConsolePolling(); startFilePolling(); startMonitoring();
+}
+
+// ---- PROXY ----
+async function proxy(endpoint, method='GET', body=null){
+    const res=await fetch('/api/proxy',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({endpoint,method,body,domain:localStorage.getItem('ptero_domain'),key:localStorage.getItem('ptero_key')})
+    });
+    return await res.json();
+}
+
+// ---- SERVERS ----
+async function fetchServers(){
+    const data=await proxy('');
+    const select=document.getElementById('serverSelect');
+    select.innerHTML=data.data.map(s=>`<option value="${s.attributes.identifier}">${s.attributes.name}</option>`).join('');
+    if(data.data.length){currentServer=data.data[0].attributes.identifier;}
+}
+function switchServer(){currentServer=document.getElementById('serverSelect').value;}
+
+// ---- POWER ----
+async function sendPower(signal){
+    await proxy(`/servers/${currentServer}/power`,'POST',{signal});
+    logToConsole(`Power signal sent: ${signal}`,'text-blue-400');
+}
+
+// ---- COMMAND ----
+function logToConsole(msg,cls='text-slate-300'){
+    const c=document.getElementById('console-logs'); const div=document.createElement('div'); div.className=cls; div.innerText=msg;
+    c.appendChild(div); c.scrollTop=c.scrollHeight;
+}
+async function executeCommand(){
+    const i=document.getElementById('cmdInput'); if(!i.value)return;
+    await proxy(`/servers/${currentServer}/command`,'POST',{command:i.value});
+    logToConsole(`Command sent: ${i.value}`,'text-emerald-500'); i.value='';
+}
+
+// ---- RESOURCE CHART ----
+function initChart(){
+    const ctx=document.getElementById('resourceChart').getContext('2d');
+    chart=new Chart(ctx,{type:'line',data:{labels:[],datasets:[{label:'CPU %',borderColor:'#3b82f6',data:[]},{label:'RAM MB',borderColor:'#10b981',data:[]}]},options:{responsive:true}});
+}
+async function startMonitoring(){
+    setInterval(async ()=>{
+        if(!currentServer) return;
+        const data=await proxy(`/servers/${currentServer}/resources`);
+        chart.data.labels.push('');
+        chart.data.datasets[0].data.push(data.attributes.resources.cpu_absolute);
+        chart.data.datasets[1].data.push((data.attributes.resources.memory_bytes/1024/1024).toFixed(0));
+        if(chart.data.labels.length>30){chart.data.labels.shift(); chart.data.datasets[0].data.shift(); chart.data.datasets[1].data.shift();}
+        chart.update('none');
+    },3000);
+}
+
+// ---- CONSOLE POLLING ----
+async function startConsolePolling(){
+    setInterval(async ()=>{
+        if(!currentServer) return;
+        const data=await proxy(`/servers/${currentServer}/command?tail=${consoleTail}`);
+        if(data && data.data){ data.data.forEach(d=>{logToConsole(d.data,'text-slate-300'); consoleTail++;}); }
+    },2000);
+}
+
+// ---- FILE MANAGER ----
+async function startFilePolling(){ setInterval(fetchFiles,5000);}
+async function fetchFiles(){
+    if(!currentServer) return;
+    const data=await proxy(`/servers/${currentServer}/files/list`);
+    const list=document.getElementById('fileList');
+    list.innerHTML=data.data.map(f=>{
+        const isDir=f.attributes.is_directory;
+        return `<div onclick="${isDir?'':'openEditor(\''+f.attributes.name+'\')'}" class="p-2 rounded hover:bg-slate-700 flex justify-between cursor-pointer">
+        <span>${isDir?'📁':'📄'} ${f.attributes.name}</span>
+        <span class="text-xs">${isDir?'DIR':(f.attributes.size/1024).toFixed(1)+'KB'}</span></div>`;
+    }).join('');
+}
+
+// ---- FILE EDITOR ----
+async function openEditor(file){
+    const data=await proxy(`/servers/${currentServer}/files/contents?file=${file}`);
+    currentFilePath=file;
+    document.getElementById('editing-filename').innerText=file;
+    document.getElementById('file-content').value=data;
+    document.getElementById('editor-modal').classList.remove('hidden');
+}
+async function saveFileContent(){
+    const content=document.getElementById('file-content').value;
+    await proxy(`/servers/${currentServer}/files/write?file=${currentFilePath}`,'POST',content);
+    closeEditor(); fetchFiles();
+}
+function closeEditor(){document.getElementById('editor-modal').classList.add('hidden');}
+
+</script>
+</body>
+</html>
